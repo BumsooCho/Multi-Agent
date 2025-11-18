@@ -5,20 +5,33 @@ from fastapi.responses import RedirectResponse
 from config.redis_config import get_redis
 from social_oauth.application.usecase.google_oauth2_usecase import GoogleOAuth2UseCase
 from social_oauth.infrastructure.service.google_oauth2_service import GoogleOAuth2Service
+from account.application.usecase.account_use_case import AccountUseCase
+from account.infrastructure.repository.account_repository_impl import AccountRepositoryImpl
+
+# getInstance 방식 변경 검토
 
 authentication_router = APIRouter()
 service = GoogleOAuth2Service()
-usecase = GoogleOAuth2UseCase(service)
+account_repository = AccountRepositoryImpl()
+account_usecase = AccountUseCase(account_repository)
+google_usecase = GoogleOAuth2UseCase(service)
+
 redis_client = get_redis()
 
 
 @authentication_router.get("/google")
 async def redirect_to_google():
-    url = usecase.get_authorization_url()
+    #url = usecase.get_authorization_url()
+    url = google_usecase.get_authorization_url()
     print("[DEBUG] Redirecting to Google:", url)
     return RedirectResponse(url)
 
 
+# Google에게 요청이 날아감.
+# 그런데 Google Cloud에 가서 redirect uri에 설정해 놓은 것이 있음. 
+# 로그인이 완료되는 순간 알아서 Google CLoud에 등록한 redirect uri로 날아감 
+# 근데 그 주소가 우리는 localhost:33333/authentication/google/redirect 였음. 
+# 그렇기 때문에 구글 로그인이 성공하면 아래 Controller (Router)가 동작하게 됨
 @authentication_router.get("/google/redirect")
 async def process_google_redirect(
     response: Response,
@@ -30,8 +43,19 @@ async def process_google_redirect(
     print("state:", state)
 
     # code -> access token
-    access_token = usecase.login_and_fetch_user(state or "", code)
-    print("[DEBUG] Access token received:", access_token.access_token)
+    #access_token = usecase.login_and_fetch_user(state or "", code)
+    #print("[DEBUG] Access token received:", access_token.access_token)
+    
+    result = google_usecase.fetch_user_profile(code, state or "")
+    profile = result["profile"]
+    access_token = result["access_token"]
+    print("profile:", profile)
+    
+    # 계정 생성/조회
+    account = account_usecase.create_or_get_account(
+        profile.get("email"),
+        profile.get("name")
+    )
 
     # session_id 생성
     session_id = str(uuid.uuid4())
@@ -47,7 +71,7 @@ async def process_google_redirect(
         key="session_id",
         value=session_id,
         httponly=True,
-        secure=False,
+        secure=True,
         samesite="none",
         max_age=3600
     )
